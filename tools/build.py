@@ -32,7 +32,17 @@ import sys
 import textwrap
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+# Pillow is only needed to *generate* placeholder photos, so it is imported
+# lazily: `--skip-media` (which is what CI runs) works on a bare Python.
+try:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+    HAVE_PIL = True
+    PIL_HINT = ""
+except ImportError:  # pragma: no cover - exercised by the CI environment
+    HAVE_PIL = False
+    PIL_HINT = ("Pillow is required to generate placeholder photos and covers.\n"
+                "  python3 -m pip install Pillow\n"
+                "or run with --skip-media to only rewrite text and manifests.")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from content import ISSUES, SITE  # noqa: E402
@@ -344,7 +354,15 @@ def main() -> int:
 
     def needs(path: Path) -> bool:
         """Generate media only when it is absent, so real photos survive."""
-        return want_media and (args.force_media or not path.exists())
+        if not want_media:
+            return False
+        if not (args.force_media or not path.exists()):
+            return False
+        if not HAVE_PIL:
+            raise SystemExit(
+                f"! cannot generate {path.relative_to(ROOT)} without Pillow\n{PIL_HINT}"
+            )
+        return True
 
     for issue in ISSUES:
         issue_dir = ISSUES_DIR / issue["slug"]

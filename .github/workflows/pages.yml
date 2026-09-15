@@ -48,6 +48,9 @@ jobs:
           test -n "$(find issues -name video.mp4 -print -quit)" || { echo "::error::no tile videos found"; exit 1; }
 
       - uses: actions/configure-pages@v5
+        with:
+          # turn GitHub Pages on automatically the first time this runs
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .
