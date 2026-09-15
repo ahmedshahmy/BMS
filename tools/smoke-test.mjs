@@ -182,7 +182,62 @@ const COLLECT = `(() => {
   };
 })()`;
 
+/* ---------------------------------------------------- catalogue fixtures */
+/*
+ * Expectations are read from the generated manifests rather than hard-coded,
+ * so adding issues or tiles never breaks the test -- only real regressions do.
+ */
+
+function parseManifest(js, marker) {
+  const start = js.indexOf(marker);
+  if (start === -1) throw new Error(`marker "${marker}" not found in manifest`);
+  const rest = js.slice(start + marker.length);
+  const json = rest.slice(rest.indexOf('=') + 1).trim().replace(/;\s*$/, '');
+  return JSON.parse(json);
+}
+
+async function loadJson(path, marker) {
+  const res = await fetch(new URL(path, BASE).href);
+  if (!res.ok) throw new Error(`${path} -> HTTP ${res.status}`);
+  return parseManifest(await res.text(), marker);
+}
+
+async function fixtures() {
+  const catalog = await loadJson('issues/index.js', 'window.BMS_ISSUES');
+  if (!catalog.length) throw new Error('the catalogue is empty');
+
+  const issues = [];
+  for (const meta of catalog) {
+    const data = await loadJson(
+      `issues/${meta.slug}/issue.js`, `window.BMS_ISSUE_DATA["${meta.slug}"]`,
+    );
+    issues.push(data);
+  }
+
+  const current = issues[0];
+  const archived = issues.length > 1 ? issues[issues.length - 1] : null;
+  const allTiles = issues.flatMap((issue) => issue.tiles.map((tile) => ({ issue, tile })));
+
+  return {
+    catalog,
+    issues,
+    current,
+    archived,
+    allTiles,
+    // a tile that exercises tables, a tile with a clip, and one from an old issue
+    tableTile: allTiles.find((x) => /\|\s*:?-{2,}/.test(x.tile.text)) || null,
+    videoTile: allTiles.find((x) => x.tile.video) || null,
+  };
+}
+
 async function main() {
+  const fx = await fixtures();
+  console.log(
+    `Catalogue: ${fx.catalog.length} issues, ` +
+    `${fx.catalog.reduce((n, i) => n + i.tileCount, 0)} tiles ` +
+    `(current: ${fx.current.edition}, issue ${fx.current.number})`,
+  );
+
   await openSocket(await connect());
   await send('Page.enable');
   await send('Runtime.enable');
@@ -195,72 +250,97 @@ async function main() {
   console.log('\nTitle screen  (iPhone 12 viewport, 390x844)');
   await open(`${BASE}#/`);
   let s = await evaluate(COLLECT);
-  check('issue 12 tiles render on the title screen', s.tiles === 9, `${s.tiles} tiles`);
+  const firstTile = fx.current.tiles[0];
+
+  check('current issue tiles render on the title screen',
+    s.tiles === fx.current.tiles.length, `${s.tiles} of ${fx.current.tiles.length} tiles`);
   check('logo is in the header and loads', s.logoInHeader?.loaded === true,
     s.logoInHeader ? s.logoInHeader.src : 'no logo');
-  check('hero shows the latest edition', /Autumn 2025/.test(s.h1[0] || '') && /Issue 12/.test(s.heroTag || ''),
+  check('hero shows the latest edition',
+    (s.h1[0] || '').includes(fx.current.edition) && (s.heroTag || '').includes(`Issue ${fx.current.number}`),
     `${s.h1[0]} / ${s.heroTag}`);
-  check('previous issues listed on the title screen', s.issueCards === 2, `${s.issueCards} cards`);
+  check('previous issues are reachable from the title screen',
+    s.issueCards === Math.min(2, fx.catalog.length - 1),
+    `${s.issueCards} cards`);
   check('every tile photo loaded', s.images.length > 0 && s.images.every((i) => i.loaded),
     `${s.images.filter((i) => i.loaded).length}/${s.images.length}`);
   check('no horizontal overflow at 390px', s.overflowPx === 0, `${s.overflowPx}px`);
 
   /* ---- 2. tap a tile (client-side routing) ---------------------------- */
   console.log('\nSelecting a tile  (real click, hash router)');
-  await evaluate(`[...document.querySelectorAll('.tile')].find(t => t.textContent.includes('Madrasah')).click()`);
+  await evaluate(`document.querySelector('.tile').click()`);
   await sleep(900);
   await settleImages();
   s = await evaluate(COLLECT);
-  check('clicking a tile opens its detail view', s.tiles === 0 && (s.h1[0] || '').includes('Madrasah'),
-    s.h1[0]);
-  check('detail view shows the article prose', s.prose.p >= 4 && s.prose.h2 >= 1,
+  check('clicking a tile opens its detail view',
+    s.tiles === 0 && (s.h1[0] || '').includes(firstTile.title), s.h1[0]);
+  check('detail view shows the article prose', s.prose.p >= 1 && s.prose.h2 >= 1,
     `${s.prose.p} paragraphs, ${s.prose.h2} h2`);
-  check('detail view renders the markdown table', s.prose.tables === 1, `${s.prose.tables} tables`);
+  const expectsVideo = !!firstTile.video;
   check('detail view has a video with an mp4 source',
-    !!s.video && s.video.sources.some((x) => /video\.mp4$/.test(x)) && s.video.controls && s.video.playsinline);
-  check('pager links to prev/next tile', s.pager === 2, `${s.pager} links`);
+    s.video === null ? !expectsVideo
+      : s.video.sources.some((x) => /video\.mp4$/.test(x)) && s.video.controls && s.video.playsinline,
+    s.video ? s.video.sources.join(',') : 'no video in this tile');
+  // the first tile of an issue has only a "next" link; a lone tile has neither
+  const expectedPager = fx.current.tiles.length > 1 ? 1 : 0;
+  check('pager links to the neighbouring tile', s.pager === expectedPager,
+    `${s.pager} links, expected ${expectedPager}`);
   check('no horizontal overflow in the article', s.overflowPx === 0, `${s.overflowPx}px`);
 
-  const video = await evaluate(`(async () => {
-    const v = document.querySelector('video');
-    if (!v) return null;
-    if (v.readyState < 1) await new Promise((r) => {
-      v.addEventListener('loadedmetadata', r, { once: true });
-      setTimeout(r, 5000);
-    });
-    return { w: v.videoWidth, h: v.videoHeight, d: Math.round(v.duration * 10) / 10, err: v.error?.code || null };
-  })()`);
-  check('video metadata loads in the browser', video && video.w === 1280 && video.d > 0 && !video.err,
-    video ? `${video.w}x${video.h}, ${video.d}s` : 'no video');
+  if (fx.videoTile) {
+    await open(`${BASE}#/issue/${fx.videoTile.issue.slug}/${fx.videoTile.tile.slug}`);
+    const video = await evaluate(`(async () => {
+      const v = document.querySelector('video');
+      if (!v) return null;
+      if (v.readyState < 1) await new Promise((r) => {
+        v.addEventListener('loadedmetadata', r, { once: true });
+        setTimeout(r, 5000);
+      });
+      return { w: v.videoWidth, h: v.videoHeight, d: Math.round(v.duration * 10) / 10, err: v.error?.code || null };
+    })()`);
+    check('video metadata loads in the browser', video && video.w > 0 && video.d > 0 && !video.err,
+      video ? `${video.w}x${video.h}, ${video.d}s` : 'no video');
+  }
 
   /* ---- 3. cold deep link into an archived issue ----------------------- */
-  console.log('\nArchived issue  (cold deep link)');
-  await open(`${BASE}#/issue/2025-03-ramadan`);
-  s = await evaluate(COLLECT);
-  check('archived issue lists its own 7 tiles', s.tiles === 7, `${s.tiles} tiles`);
-  check('archived issue is flagged as archived', s.archiveNotice === true);
-  check('archived tile titles differ from the current issue',
-    s.tileTitles.includes('Welcome Ramadan') && s.tileTitles.includes('Community Iftar'));
+  if (fx.archived) {
+    console.log('\nArchived issue  (cold deep link)');
+    await open(`${BASE}#/issue/${fx.archived.slug}`);
+    s = await evaluate(COLLECT);
+    check('archived issue lists its own tiles',
+      s.tiles === fx.archived.tiles.length, `${s.tiles} tiles`);
+    check('archived issue is flagged as archived', s.archiveNotice === true);
+    check('archived issue shows its own tiles, not the current ones',
+      s.tileTitles[0] === fx.archived.tiles[0].title, s.tileTitles[0]);
+  } else {
+    console.log('\nArchived issue  -- skipped (only one issue published)');
+  }
 
   /* ---- 4. cold deep link straight into a tile ------------------------- */
+  const deep = fx.tableTile || fx.allTiles[0];
   console.log('\nCold deep link straight into a tile');
-  await open(`${BASE}#/issue/2025-03-ramadan/community-iftar`);
+  await open(`${BASE}#/issue/${deep.issue.slug}/${deep.tile.slug}`);
   s = await evaluate(COLLECT);
-  check('deep link renders the right article', (s.h1[0] || '').includes('Community Iftar'), s.h1[0]);
-  check('deep link sets the document title', /Community Iftar/.test(s.title), s.title);
+  check('deep link renders the right article', (s.h1[0] || '').includes(deep.tile.title), s.h1[0]);
+  check('deep link sets the document title', s.title.includes(deep.tile.title), s.title);
   check('deep link loads its photo', s.images.every((i) => i.loaded));
+  if (fx.tableTile) {
+    check('markdown table renders', s.prose.tables >= 1, `${s.prose.tables} tables`);
+    check('table content is readable', /[A-Za-z]/.test(s.prose.text), s.prose.text.slice(0, 40));
+  }
   check('no horizontal overflow on the deep link', s.overflowPx === 0, `${s.overflowPx}px`);
 
   /* ---- 5. archive ------------------------------------------------------ */
   console.log('\nArchive');
   await open(`${BASE}#/archive`);
   s = await evaluate(COLLECT);
-  check('archive lists all 3 issues', s.issueCards === 3, `${s.issueCards} cards`);
+  check('archive lists every published issue',
+    s.issueCards === fx.catalog.length, `${s.issueCards} cards`);
   check('archive covers all loaded', s.images.every((i) => i.loaded));
 
   /* ---- 6. bad route ---------------------------------------------------- */
   console.log('\nUnknown tile');
-  await open(`${BASE}#/issue/2025-11-autumn/not-a-real-tile`);
+  await open(`${BASE}#/issue/${fx.current.slug}/not-a-real-tile`);
   s = await evaluate(COLLECT);
   check('unknown tile shows a "not found" state', s.error === true);
 
