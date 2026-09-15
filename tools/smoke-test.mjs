@@ -106,6 +106,36 @@ async function open(url) {
   await sleep(120);
   await send('Page.navigate', { url });
   await sleep(1100);
+  await settleImages();
+}
+
+/**
+ * Tiles use loading="lazy", so images below the fold are not fetched until the
+ * reader scrolls. Walk the page the way a reader would and wait for every image
+ * to finish (or fail) before asserting anything about them -- otherwise the
+ * test only measures network speed.
+ */
+async function settleImages(timeout = 20000) {
+  await evaluate(`(async () => {
+    const step = Math.max(200, window.innerHeight);
+    for (let y = 0; y < document.body.scrollHeight; y += step) {
+      window.scrollTo(0, y);
+      await new Promise((r) => setTimeout(r, 120));
+    }
+    window.scrollTo(0, 0);
+    await new Promise((r) => setTimeout(r, 200));
+  })()`);
+  return evaluate(`(async () => {
+    const imgs = [...document.querySelectorAll('img')];
+    const deadline = Date.now() + ${timeout};
+    while (!imgs.every((i) => i.complete) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return {
+      total: imgs.length,
+      loaded: imgs.filter((i) => i.complete && i.naturalWidth > 0).length,
+    };
+  })()`);
 }
 
 /* ------------------------------------------------------------- assertions */
@@ -179,6 +209,7 @@ async function main() {
   console.log('\nSelecting a tile  (real click, hash router)');
   await evaluate(`[...document.querySelectorAll('.tile')].find(t => t.textContent.includes('Madrasah')).click()`);
   await sleep(900);
+  await settleImages();
   s = await evaluate(COLLECT);
   check('clicking a tile opens its detail view', s.tiles === 0 && (s.h1[0] || '').includes('Madrasah'),
     s.h1[0]);
