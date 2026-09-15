@@ -1,0 +1,25 @@
+{
+  "name": "British Muslim Society \u2014 Newsletter",
+  "short_name": "BMS Newsletter",
+  "description": "News, prayer timetables, events and updates from the British Muslim Society.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f4f6fb",
+  "theme_color": "#01237d",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "300x300",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "logo.png",
+      "sizes": "300x300",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

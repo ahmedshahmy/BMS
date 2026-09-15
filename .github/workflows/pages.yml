@@ -1,0 +1,63 @@
+name: Deploy newsletter to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Rebuild issues from tools/content.py
+        run: python3 tools/build.py --skip-media
+
+      - name: Fail if generated files are out of date
+        run: |
+          if ! git diff --quiet -- issues; then
+            echo "::error::issues/ is out of date - run 'python3 tools/build.py' and commit the result."
+            git --no-pager diff --stat -- issues
+            exit 1
+          fi
+
+      - name: Check the site is complete
+        run: |
+          set -e
+          test -f index.html
+          test -f logo.png
+          test -f issues/index.js
+          for d in issues/*/; do
+            test -f "${d}issue.js" || { echo "::error::missing ${d}issue.js"; exit 1; }
+          done
+          test -n "$(find issues -name photo.jpg -print -quit)" || { echo "::error::no tile photos found"; exit 1; }
+          test -n "$(find issues -name video.mp4 -print -quit)" || { echo "::error::no tile videos found"; exit 1; }
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

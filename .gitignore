@@ -1,0 +1,13 @@
+# Build tooling downloaded on demand (contains a static ffmpeg binary)
+.buildtools/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
